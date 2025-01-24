@@ -2,10 +2,14 @@
 #include "common/properties.h"
 #include "common/parsing.h"
 #include "common/io/io.h"
+#include "common/processing.h"
 #include "util/stringUtils.h"
 
 #include <string.h>
 #include <stdlib.h>
+
+#define FF_STR_INDIR(x) #x
+#define FF_STR(x) FF_STR_INDIR(x)
 
 static inline bool allRelevantValuesSet(const FFOSResult* result)
 {
@@ -27,7 +31,7 @@ static bool parseLsbRelease(const char* fileName, FFOSResult* result)
 
 static bool parseOsRelease(const char* fileName, FFOSResult* result)
 {
-    return ffParsePropFileValues(fileName, 10, (FFpropquery[]) {
+    return ffParsePropFileValues(fileName, 11, (FFpropquery[]) {
         {"PRETTY_NAME =", &result->prettyName},
         {"NAME =", &result->name},
         {"ID =", &result->id},
@@ -37,17 +41,55 @@ static bool parseOsRelease(const char* fileName, FFOSResult* result)
         {"VERSION =", &result->version},
         {"VERSION_ID =", &result->versionID},
         {"VERSION_CODENAME =", &result->codename},
-        {"BUILD_ID =", &result->buildID}
+        {"CODENAME =", &result->codename},
+        {"BUILD_ID =", &result->buildID},
     });
 }
 
-static void getUbuntuFlavour(FFOSResult* result)
+// Common logic for detecting Armbian image version
+FF_MAYBE_UNUSED static bool detectArmbianVersion(FFOSResult* result)
+{
+    if (ffStrbufStartsWithS(&result->prettyName, "Armbian ")) // Official Armbian release images
+        ffStrbufSetS(&result->name, "Armbian");
+    else if (ffStrbufStartsWithS(&result->prettyName, "Armbian-unofficial ")) // Unofficial Armbian image built from source
+        ffStrbufSetS(&result->name, "Armbian (custom build)");
+    else
+        return false;
+    ffStrbufSet(&result->idLike, &result->id);
+    ffStrbufSetS(&result->id, "armbian");
+    ffStrbufClear(&result->versionID);
+    uint32_t versionStart = ffStrbufFirstIndexC(&result->prettyName, ' ') + 1;
+    uint32_t versionEnd = ffStrbufNextIndexC(&result->prettyName, versionStart, ' ');
+    ffStrbufSetNS(&result->versionID, versionEnd - versionStart, result->prettyName.chars + versionStart);
+    return true;
+}
+
+FF_MAYBE_UNUSED static void getUbuntuFlavour(FFOSResult* result)
 {
     const char* xdgConfigDirs = getenv("XDG_CONFIG_DIRS");
     if(!ffStrSet(xdgConfigDirs))
         return;
 
-    if(strstr(xdgConfigDirs, "kde") != NULL || strstr(xdgConfigDirs, "plasma") != NULL)
+    if (detectArmbianVersion(result))
+        return;
+    else if(ffStrbufStartsWithS(&result->prettyName, "Linux Lite "))
+    {
+        ffStrbufSetS(&result->name, "Linux Lite");
+        ffStrbufSetS(&result->id, "linuxlite");
+        ffStrbufSetS(&result->idLike, "ubuntu");
+        ffStrbufSetS(&result->versionID, result->prettyName.chars + strlen("Linux Lite "));
+        return;
+    }
+    else if(ffStrbufStartsWithS(&result->prettyName, "Rhino Linux "))
+    {
+        ffStrbufSetS(&result->name, "Rhino Linux");
+        ffStrbufSetS(&result->id, "rhinolinux");
+        ffStrbufSetS(&result->idLike, "ubuntu");
+        ffStrbufSetS(&result->versionID, result->prettyName.chars + strlen("Rhino Linux "));
+        return;
+    }
+
+    if(ffStrContains(xdgConfigDirs, "kde") || ffStrContains(xdgConfigDirs, "plasma") || ffStrContains(xdgConfigDirs, "kubuntu"))
     {
         ffStrbufSetS(&result->name, "Kubuntu");
         ffStrbufSetS(&result->prettyName, "Kubuntu");
@@ -56,7 +98,7 @@ static void getUbuntuFlavour(FFOSResult* result)
         return;
     }
 
-    if(strstr(xdgConfigDirs, "xfce") != NULL || strstr(xdgConfigDirs, "xubuntu") != NULL)
+    if(ffStrContains(xdgConfigDirs, "xfce") || ffStrContains(xdgConfigDirs, "xubuntu"))
     {
         ffStrbufSetS(&result->name, "Xubuntu");
         ffStrbufSetS(&result->prettyName, "Xubuntu");
@@ -65,7 +107,7 @@ static void getUbuntuFlavour(FFOSResult* result)
         return;
     }
 
-    if(strstr(xdgConfigDirs, "lxde") != NULL || strstr(xdgConfigDirs, "lubuntu") != NULL)
+    if(ffStrContains(xdgConfigDirs, "lxqt") || ffStrContains(xdgConfigDirs, "lubuntu"))
     {
         ffStrbufSetS(&result->name, "Lubuntu");
         ffStrbufSetS(&result->prettyName, "Lubuntu");
@@ -74,7 +116,7 @@ static void getUbuntuFlavour(FFOSResult* result)
         return;
     }
 
-    if(strstr(xdgConfigDirs, "budgie") != NULL)
+    if(ffStrContains(xdgConfigDirs, "budgie"))
     {
         ffStrbufSetS(&result->name, "Ubuntu Budgie");
         ffStrbufSetS(&result->prettyName, "Ubuntu Budgie");
@@ -83,7 +125,7 @@ static void getUbuntuFlavour(FFOSResult* result)
         return;
     }
 
-    if(strstr(xdgConfigDirs, "cinnamon") != NULL)
+    if(ffStrContains(xdgConfigDirs, "cinnamon"))
     {
         ffStrbufSetS(&result->name, "Ubuntu Cinnamon");
         ffStrbufSetS(&result->prettyName, "Ubuntu Cinnamon");
@@ -92,7 +134,7 @@ static void getUbuntuFlavour(FFOSResult* result)
         return;
     }
 
-    if(strstr(xdgConfigDirs, "mate") != NULL)
+    if(ffStrContains(xdgConfigDirs, "mate"))
     {
         ffStrbufSetS(&result->name, "Ubuntu MATE");
         ffStrbufSetS(&result->prettyName, "Ubuntu MATE");
@@ -101,7 +143,7 @@ static void getUbuntuFlavour(FFOSResult* result)
         return;
     }
 
-    if(strstr(xdgConfigDirs, "studio") != NULL)
+    if(ffStrContains(xdgConfigDirs, "studio"))
     {
         ffStrbufSetS(&result->name, "Ubuntu Studio");
         ffStrbufSetS(&result->prettyName, "Ubuntu Studio");
@@ -110,7 +152,7 @@ static void getUbuntuFlavour(FFOSResult* result)
         return;
     }
 
-    if(strstr(xdgConfigDirs, "sway") != NULL)
+    if(ffStrContains(xdgConfigDirs, "sway"))
     {
         ffStrbufSetS(&result->name, "Ubuntu Sway");
         ffStrbufSetS(&result->prettyName, "Ubuntu Sway");
@@ -119,7 +161,7 @@ static void getUbuntuFlavour(FFOSResult* result)
         return;
     }
 
-    if(strstr(xdgConfigDirs, "touch") != NULL)
+    if(ffStrContains(xdgConfigDirs, "touch"))
     {
         ffStrbufSetS(&result->name, "Ubuntu Touch");
         ffStrbufSetS(&result->prettyName, "Ubuntu Touch");
@@ -127,9 +169,18 @@ static void getUbuntuFlavour(FFOSResult* result)
         ffStrbufSetS(&result->idLike, "ubuntu");
         return;
     }
+
+    if(ffStrContains(xdgConfigDirs, "lliurex"))
+    {
+        ffStrbufSetS(&result->name, "LliureX");
+        ffStrbufSetS(&result->prettyName, "LliureX");
+        ffStrbufSetS(&result->id, "lliurex");
+        ffStrbufSetS(&result->idLike, "ubuntu");
+        return;
+    }
 }
 
-static void getDebianVersion(FFOSResult* result)
+FF_MAYBE_UNUSED static void getDebianVersion(FFOSResult* result)
 {
     FF_STRBUF_AUTO_DESTROY debianVersion = ffStrbufCreate();
     ffAppendFileBuffer("/etc/debian_version", &debianVersion);
@@ -139,14 +190,79 @@ static void getDebianVersion(FFOSResult* result)
     ffStrbufSet(&result->versionID, &debianVersion);
 }
 
+FF_MAYBE_UNUSED static bool detectDebianDerived(FFOSResult* result)
+{
+    if (detectArmbianVersion(result))
+        return true;
+    else if (ffStrbufStartsWithS(&result->name, "Loc-OS"))
+    {
+        ffStrbufSetS(&result->id, "locos");
+        ffStrbufSetS(&result->idLike, "debian");
+        return true;
+    }
+    else if (ffStrbufEqualS(&result->name, "Parrot Security"))
+    {
+        // https://github.com/ParrotSec/base-files/blob/c06f6d42ddf8d79564882306576576eddab7d907/etc/os-release
+        ffStrbufSetS(&result->id, "parrot");
+        ffStrbufSetS(&result->idLike, "debian");
+        return true;
+    }
+    else if (ffStrbufStartsWithS(&result->name, "Lilidog GNU/Linux"))
+    {
+        // https://github.com/fastfetch-cli/fastfetch/issues/1373
+        ffStrbufSetS(&result->id, "lilidog");
+        ffStrbufSetS(&result->idLike, "debian");
+        return true;
+    }
+    else if (access("/usr/bin/pveversion", X_OK) == 0)
+    {
+        ffStrbufSetS(&result->id, "pve");
+        ffStrbufSetS(&result->idLike, "debian");
+        ffStrbufSetS(&result->name, "Proxmox VE");
+        ffStrbufClear(&result->versionID);
+        if (ffProcessAppendStdOut(&result->versionID, (char* const[]) {
+            "/usr/bin/dpkg-query",
+            "--showformat=${version}",
+            "--show",
+            "pve-manager",
+            NULL,
+        }) == NULL) // 8.2.2
+            ffStrbufTrimRightSpace(&result->versionID);
+        ffStrbufSetF(&result->prettyName, "Proxmox VE %s", result->versionID.chars);
+        return true;
+    }
+    else
+    {
+        // Hack for MX Linux. See #847
+        FF_STRBUF_AUTO_DESTROY lsbRelease = ffStrbufCreate();
+        if (ffAppendFileBuffer("/etc/lsb-release", &lsbRelease) && ffStrbufContainS(&lsbRelease, "DISTRIB_ID=MX"))
+        {
+            ffStrbufSetS(&result->id, "mx");
+            ffStrbufSetS(&result->idLike, "debian");
+            ffStrbufSetS(&result->name, "MX");
+
+            ffStrbufClear(&result->version);
+            ffParsePropLines(lsbRelease.chars, "DISTRIB_RELEASE=", &result->version);
+            ffStrbufSet(&result->versionID, &result->version);
+
+            ffStrbufClear(&result->codename);
+            ffParsePropLines(lsbRelease.chars, "DISTRIB_CODENAME=", &result->codename);
+
+            ffStrbufClear(&result->prettyName);
+            ffParsePropLines(lsbRelease.chars, "DISTRIB_DESCRIPTION=", &result->prettyName);
+            return true;
+        }
+    }
+    return false;
+}
+
 static void detectOS(FFOSResult* os)
 {
-    if(instance.config.general.osFile.length > 0)
-    {
-        parseLsbRelease(instance.config.general.osFile.chars, os);
-        parseOsRelease(instance.config.general.osFile.chars, os);
-        return;
-    }
+    #ifdef FF_CUSTOM_OS_RELEASE_PATH
+    parseOsRelease(FF_STR(FF_CUSTOM_OS_RELEASE_PATH), os);
+    parseLsbRelease(FF_STR(FF_CUSTOM_OS_RELEASE_PATH), os);
+    return;
+    #endif
 
     if(instance.config.general.escapeBedrock && parseOsRelease(FASTFETCH_TARGET_DIR_ROOT "/bedrock" FASTFETCH_TARGET_DIR_ETC "/bedrock-release", os))
     {
@@ -165,22 +281,9 @@ static void detectOS(FFOSResult* os)
 
     // Refer: https://gist.github.com/natefoo/814c5bf936922dad97ff
 
-    // Hack for MX Linux. See #847
-    if(parseLsbRelease(FASTFETCH_TARGET_DIR_ETC "/lsb-release", os))
-    {
-        if (ffStrbufEqualS(&os->id, "MX"))
-        {
-            ffStrbufSetStatic(&os->name, "MX");
-            ffStrbufSetStatic(&os->idLike, "debian");
-            return;
-        }
-
-        // For archlinux
-        if (ffStrbufEqualS(&os->version, "rolling"))
-            ffStrbufClear(&os->version);
-    }
-
-    if(parseOsRelease(FASTFETCH_TARGET_DIR_ETC "/os-release", os) && allRelevantValuesSet(os))
+    if((parseOsRelease(FASTFETCH_TARGET_DIR_ETC "/os-release", os) ||
+        parseLsbRelease(FASTFETCH_TARGET_DIR_ETC "/lsb-release", os)) &&
+        allRelevantValuesSet(os))
         return;
 
     parseOsRelease(FASTFETCH_TARGET_DIR_USR "/lib/os-release", os);
@@ -190,8 +293,21 @@ void ffDetectOSImpl(FFOSResult* os)
 {
     detectOS(os);
 
+    #ifdef __linux__
     if(ffStrbufIgnCaseEqualS(&os->id, "ubuntu"))
         getUbuntuFlavour(os);
     else if(ffStrbufIgnCaseEqualS(&os->id, "debian"))
-        getDebianVersion(os);
+    {
+        if (!detectDebianDerived(os))
+            getDebianVersion(os);
+    }
+    else if(ffStrbufEqualS(&os->id, "linuxmint"))
+    {
+        if (ffStrbufEqualS(&os->name, "LMDE"))
+        {
+            ffStrbufSetS(&os->id, "lmde");
+            ffStrbufSetS(&os->idLike, "linuxmint");
+        }
+    }
+    #endif
 }

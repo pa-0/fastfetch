@@ -1,7 +1,7 @@
 #include "gpu_driver_specific.h"
 
-#include "3rdparty/nvml/nvml.h"
 #include "common/library.h"
+#include "nvml.h"
 
 struct FFNvmlData {
     FF_LIBRARY_SYMBOL(nvmlDeviceGetCount_v2)
@@ -12,17 +12,22 @@ struct FFNvmlData {
     FF_LIBRARY_SYMBOL(nvmlDeviceGetMemoryInfo_v2)
     FF_LIBRARY_SYMBOL(nvmlDeviceGetNumGpuCores)
     FF_LIBRARY_SYMBOL(nvmlDeviceGetMaxClockInfo)
+    FF_LIBRARY_SYMBOL(nvmlDeviceGetUtilizationRates)
     FF_LIBRARY_SYMBOL(nvmlDeviceGetBrand)
+    FF_LIBRARY_SYMBOL(nvmlDeviceGetIndex)
+    FF_LIBRARY_SYMBOL(nvmlDeviceGetName)
 
     bool inited;
 } nvmlData;
 
 const char* ffDetectNvidiaGpuInfo(const FFGpuDriverCondition* cond, FFGpuDriverResult result, const char* soName)
 {
+#ifndef FF_DISABLE_DLOPEN
+
     if (!nvmlData.inited)
     {
         nvmlData.inited = true;
-        FF_LIBRARY_LOAD(libnvml, NULL, "dlopen nvml failed", soName , 1);
+        FF_LIBRARY_LOAD(libnvml, "dlopen nvml failed", soName , 1);
         FF_LIBRARY_LOAD_SYMBOL_MESSAGE(libnvml, nvmlInit_v2)
         FF_LIBRARY_LOAD_SYMBOL_MESSAGE(libnvml, nvmlShutdown)
         FF_LIBRARY_LOAD_SYMBOL_VAR_MESSAGE(libnvml, nvmlData, nvmlDeviceGetCount_v2)
@@ -33,7 +38,10 @@ const char* ffDetectNvidiaGpuInfo(const FFGpuDriverCondition* cond, FFGpuDriverR
         FF_LIBRARY_LOAD_SYMBOL_VAR_MESSAGE(libnvml, nvmlData, nvmlDeviceGetMemoryInfo_v2)
         FF_LIBRARY_LOAD_SYMBOL_VAR_MESSAGE(libnvml, nvmlData, nvmlDeviceGetNumGpuCores)
         FF_LIBRARY_LOAD_SYMBOL_VAR_MESSAGE(libnvml, nvmlData, nvmlDeviceGetMaxClockInfo)
+        FF_LIBRARY_LOAD_SYMBOL_VAR_MESSAGE(libnvml, nvmlData, nvmlDeviceGetUtilizationRates)
         FF_LIBRARY_LOAD_SYMBOL_VAR_MESSAGE(libnvml, nvmlData, nvmlDeviceGetBrand)
+        FF_LIBRARY_LOAD_SYMBOL_VAR_MESSAGE(libnvml, nvmlData, nvmlDeviceGetIndex)
+        FF_LIBRARY_LOAD_SYMBOL_VAR_MESSAGE(libnvml, nvmlData, nvmlDeviceGetName)
 
         if (ffnvmlInit_v2() != NVML_SUCCESS)
         {
@@ -51,7 +59,7 @@ const char* ffDetectNvidiaGpuInfo(const FFGpuDriverCondition* cond, FFGpuDriverR
     if (cond->type & FF_GPU_DRIVER_CONDITION_TYPE_BUS_ID)
     {
         char pciBusIdStr[32];
-        snprintf(pciBusIdStr, sizeof(pciBusIdStr) - 1, "%04x:%02x:%02x.%d", cond->pciBusId.domain, cond->pciBusId.bus, cond->pciBusId.device, cond->pciBusId.func);
+        snprintf(pciBusIdStr, ARRAY_SIZE(pciBusIdStr) - 1, "%04x:%02x:%02x.%d", cond->pciBusId.domain, cond->pciBusId.bus, cond->pciBusId.device, cond->pciBusId.func);
 
         nvmlReturn_t ret = nvmlData.ffnvmlDeviceGetHandleByPciBusId_v2(pciBusIdStr, &device);
         if (ret != NVML_SUCCESS)
@@ -99,6 +107,14 @@ const char* ffDetectNvidiaGpuInfo(const FFGpuDriverCondition* cond, FFGpuDriverR
         }
     }
 
+    if (result.index)
+    {
+        unsigned int value;
+        if (nvmlData.ffnvmlDeviceGetIndex(device, &value) == NVML_SUCCESS)
+            *result.index = value;
+    }
+
+
     if (result.temp)
     {
         uint32_t value;
@@ -120,11 +136,28 @@ const char* ffDetectNvidiaGpuInfo(const FFGpuDriverCondition* cond, FFGpuDriverR
         nvmlData.ffnvmlDeviceGetNumGpuCores(device, result.coreCount);
 
     if (result.frequency)
+        nvmlData.ffnvmlDeviceGetMaxClockInfo(device, NVML_CLOCK_GRAPHICS, result.frequency);
+
+    if (result.coreUsage)
     {
-        uint32_t clockMHz;
-        if (nvmlData.ffnvmlDeviceGetMaxClockInfo(device, NVML_CLOCK_GRAPHICS, &clockMHz) == NVML_SUCCESS)
-            *result.frequency = clockMHz / 1000.;
+        nvmlUtilization_t utilization;
+        if (nvmlData.ffnvmlDeviceGetUtilizationRates(device, &utilization) == NVML_SUCCESS)
+            *result.coreUsage = utilization.gpu;
+    }
+
+    if (result.name)
+    {
+        char name[NVML_DEVICE_NAME_V2_BUFFER_SIZE];
+        if (nvmlData.ffnvmlDeviceGetName(device, name, ARRAY_SIZE(name)) == NVML_SUCCESS)
+            ffStrbufSetS(result.name, name);
     }
 
     return NULL;
+
+#else
+
+    FF_UNUSED(cond, result, soName);
+    return "dlopen is disabled";
+
+#endif
 }

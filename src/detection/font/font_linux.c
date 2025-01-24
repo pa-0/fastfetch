@@ -9,9 +9,9 @@ static void generateString(FFFontResult* font)
     if(font->fonts[0].length > 0)
     {
         ffStrbufAppend(&font->display, &font->fonts[0]);
-        ffStrbufAppendS(&font->display, " [QT]");
+        ffStrbufAppendS(&font->display, " [Qt]");
 
-        for(uint8_t i = 1; i < sizeof(font->fonts) / sizeof(font->fonts[0]); i++)
+        for(uint8_t i = 1; i < ARRAY_SIZE(font->fonts); i++)
         {
             if(font->fonts[i].length > 0)
             {

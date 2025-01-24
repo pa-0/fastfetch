@@ -4,6 +4,9 @@
 #include "util/stringUtils.h"
 #include "util/mallocHelper.h"
 #include "util/wcwidth.h"
+#include "util/textModifier.h"
+
+#include <locale.h>
 
 static inline uint32_t max(uint32_t a, uint32_t b)
 {
@@ -31,6 +34,24 @@ static inline uint32_t getWcsWidth(const FFstrbuf* mbstr, wchar_t* wstr, mbstate
 
 void ffPrintSeparator(FFSeparatorOptions* options)
 {
+    ffLogoPrintLine();
+
+    if (options->length > 0)
+    {
+        if(__builtin_expect(options->string.length == 1, 1))
+            ffPrintCharTimes(options->string.chars[0], options->length);
+        else
+        {
+            for (uint32_t i = 0; i < options->length; i++)
+            {
+                fputs(options->string.chars, stdout);
+            }
+        }
+        putchar('\n');
+        return;
+    }
+
+    setlocale(LC_CTYPE, "");
     mbstate_t state = {};
     bool fqdn = instance.config.modules.title.fqdn;
     const FFPlatform* platform = &instance.state.platform;
@@ -41,8 +62,9 @@ void ffPrintSeparator(FFSeparatorOptions* options)
     uint32_t titleLength = 1 // @
         + getWcsWidth(&platform->userName, wstr, &state) // user name
         + (fqdn ? platform->hostName.length : ffStrbufFirstIndexC(&platform->hostName, '.')); // host name
-    ffLogoPrintLine();
 
+    if(options->outputColor.length && !instance.config.display.pipe)
+        ffPrintColor(&options->outputColor);
     if(__builtin_expect(options->string.length == 1, 1))
     {
         ffPrintCharTimes(options->string.chars[0], titleLength);
@@ -83,7 +105,10 @@ void ffPrintSeparator(FFSeparatorOptions* options)
             }
         }
     }
+    if(options->outputColor.length && !instance.config.display.pipe)
+        fputs(FASTFETCH_TEXT_MODIFIER_RESET, stdout);
     putchar('\n');
+    setlocale(LC_CTYPE, "C");
 }
 
 bool ffParseSeparatorCommandOptions(FFSeparatorOptions* options, const char* key, const char* value)
@@ -94,6 +119,18 @@ bool ffParseSeparatorCommandOptions(FFSeparatorOptions* options, const char* key
     if (ffStrEqualsIgnCase(subKey, "string"))
     {
         ffOptionParseString(key, value, &options->string);
+        return true;
+    }
+
+    if (ffStrEqualsIgnCase(subKey, "output-color"))
+    {
+        ffOptionParseColor(value, &options->outputColor);
+        return true;
+    }
+
+    if (ffStrEqualsIgnCase(subKey, "length"))
+    {
+        options->length = ffOptionParseUInt32(key, value);
         return true;
     }
 
@@ -116,6 +153,18 @@ void ffParseSeparatorJsonObject(FFSeparatorOptions* options, yyjson_val* module)
             continue;
         }
 
+        if (ffStrEndsWithIgnCase(key, "outputColor"))
+        {
+            ffOptionParseColor(yyjson_get_str(val), &options->outputColor);
+            continue;
+        }
+
+        if (ffStrEndsWithIgnCase(key, "length"))
+        {
+            options->length = (uint32_t) yyjson_get_uint(val);
+            continue;
+        }
+
         ffPrintError(FF_SEPARATOR_MODULE_NAME, 0, NULL, FF_PRINT_TYPE_NO_CUSTOM_KEY, "Unknown JSON key %s", key);
     }
 }
@@ -129,20 +178,26 @@ void ffGenerateSeparatorJsonConfig(FFSeparatorOptions* options, yyjson_mut_doc* 
         yyjson_mut_obj_add_strbuf(doc, module, "string", &options->string);
 }
 
+static FFModuleBaseInfo ffModuleInfo = {
+    .name = FF_SEPARATOR_MODULE_NAME,
+    .description = "Print a separator line",
+    .parseCommandOptions = (void*) ffParseSeparatorCommandOptions,
+    .parseJsonObject = (void*) ffParseSeparatorJsonObject,
+    .printModule = (void*) ffPrintSeparator,
+    .generateJsonConfig = (void*) ffGenerateSeparatorJsonConfig,
+    .formatArgs = FF_FORMAT_ARG_LIST(((FFModuleFormatArg[]) {
+        {"Separator string", "string"},
+        {"Output color", "outputColor"},
+        {"Length", "length"},
+    }))
+};
+
 void ffInitSeparatorOptions(FFSeparatorOptions* options)
 {
-    ffOptionInitModuleBaseInfo(
-        &options->moduleInfo,
-        FF_SEPARATOR_MODULE_NAME,
-        "Print a separator line",
-        ffParseSeparatorCommandOptions,
-        ffParseSeparatorJsonObject,
-        ffPrintSeparator,
-        NULL,
-        NULL,
-        ffGenerateSeparatorJsonConfig
-    );
+    options->moduleInfo = ffModuleInfo;
     ffStrbufInitStatic(&options->string, "-");
+    ffStrbufInit(&options->outputColor);
+    options->length = 0;
 }
 
 void ffDestroySeparatorOptions(FFSeparatorOptions* options)

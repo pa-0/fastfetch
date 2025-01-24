@@ -4,12 +4,13 @@
 #include "modules/theme/theme.h"
 #include "util/stringUtils.h"
 
-#define FF_THEME_NUM_FORMAT_ARGS 1
-
 void ffPrintTheme(FFThemeOptions* options)
 {
-    FF_STRBUF_AUTO_DESTROY theme = ffStrbufCreate();
-    const char* error = ffDetectTheme(&theme);
+    FFThemeResult result = {
+        .theme1 = ffStrbufCreate(),
+        .theme2 = ffStrbufCreate()
+    };
+    const char* error = ffDetectTheme(&result);
 
     if(error)
     {
@@ -20,14 +21,26 @@ void ffPrintTheme(FFThemeOptions* options)
     if(options->moduleArgs.outputFormat.length == 0)
     {
         ffPrintLogoAndKey(FF_THEME_MODULE_NAME, 0, &options->moduleArgs, FF_PRINT_TYPE_DEFAULT);
-        ffStrbufPutTo(&theme, stdout);
+        if (result.theme1.length)
+            ffStrbufWriteTo(&result.theme1, stdout);
+        if (result.theme2.length)
+        {
+            if (result.theme1.length)
+                fputs(", ", stdout);
+            ffStrbufWriteTo(&result.theme2, stdout);
+        }
+        putchar('\n');
     }
     else
     {
-        FF_PRINT_FORMAT_CHECKED(FF_THEME_MODULE_NAME, 0, &options->moduleArgs, FF_PRINT_TYPE_DEFAULT, FF_THEME_NUM_FORMAT_ARGS, ((FFformatarg[]){
-            {FF_FORMAT_ARG_TYPE_STRBUF, &theme}
+        FF_PRINT_FORMAT_CHECKED(FF_THEME_MODULE_NAME, 0, &options->moduleArgs, FF_PRINT_TYPE_DEFAULT, ((FFformatarg[]){
+            FF_FORMAT_ARG(result.theme1, "theme1"),
+            FF_FORMAT_ARG(result.theme2, "theme2"),
         }));
     }
+
+    ffStrbufDestroy(&result.theme1);
+    ffStrbufDestroy(&result.theme2);
 }
 
 bool ffParseThemeCommandOptions(FFThemeOptions* options, const char* key, const char* value)
@@ -67,8 +80,11 @@ void ffGenerateThemeJsonConfig(FFThemeOptions* options, yyjson_mut_doc* doc, yyj
 
 void ffGenerateThemeJsonResult(FF_MAYBE_UNUSED FFThemeOptions* options, yyjson_mut_doc* doc, yyjson_mut_val* module)
 {
-    FF_STRBUF_AUTO_DESTROY theme = ffStrbufCreate();
-    const char* error = ffDetectTheme(&theme);
+    FFThemeResult result = {
+        .theme1 = ffStrbufCreate(),
+        .theme2 = ffStrbufCreate()
+    };
+    const char* error = ffDetectTheme(&result);
 
     if(error)
     {
@@ -76,30 +92,32 @@ void ffGenerateThemeJsonResult(FF_MAYBE_UNUSED FFThemeOptions* options, yyjson_m
         return;
     }
 
-    yyjson_mut_obj_add_strbuf(doc, module, "result", &theme);
+    yyjson_mut_val* theme = yyjson_mut_obj_add_obj(doc, module, "result");
+    yyjson_mut_obj_add_strbuf(doc, theme, "theme1", &result.theme1);
+    yyjson_mut_obj_add_strbuf(doc, theme, "theme2", &result.theme2);
+
+    ffStrbufDestroy(&result.theme1);
+    ffStrbufDestroy(&result.theme2);
 }
 
-void ffPrintThemeHelpFormat(void)
-{
-    FF_PRINT_MODULE_FORMAT_HELP_CHECKED(FF_THEME_MODULE_NAME, "{1}", FF_THEME_NUM_FORMAT_ARGS, ((const char* []) {
-        "Combined themes"
-    }));
-}
+static FFModuleBaseInfo ffModuleInfo = {
+    .name = FF_THEME_MODULE_NAME,
+    .description = "Print current theme of desktop environment",
+    .parseCommandOptions = (void*) ffParseThemeCommandOptions,
+    .parseJsonObject = (void*) ffParseThemeJsonObject,
+    .printModule = (void*) ffPrintTheme,
+    .generateJsonResult = (void*) ffGenerateThemeJsonResult,
+    .generateJsonConfig = (void*) ffGenerateThemeJsonConfig,
+    .formatArgs = FF_FORMAT_ARG_LIST(((FFModuleFormatArg[]) {
+        {"Theme part 1", "theme1"},
+        {"Theme part 2", "theme2"},
+    }))
+};
 
 void ffInitThemeOptions(FFThemeOptions* options)
 {
-    ffOptionInitModuleBaseInfo(
-        &options->moduleInfo,
-        FF_THEME_MODULE_NAME,
-        "Print current theme of desktop environment",
-        ffParseThemeCommandOptions,
-        ffParseThemeJsonObject,
-        ffPrintTheme,
-        ffGenerateThemeJsonResult,
-        ffPrintThemeHelpFormat,
-        ffGenerateThemeJsonConfig
-    );
-    ffOptionInitModuleArg(&options->moduleArgs);
+    options->moduleInfo = ffModuleInfo;
+    ffOptionInitModuleArg(&options->moduleArgs, "󰉼");
 }
 
 void ffDestroyThemeOptions(FFThemeOptions* options)

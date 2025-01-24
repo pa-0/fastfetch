@@ -27,7 +27,7 @@ static const char* getMedia(FFMediaResult* result)
 
     dispatch_group_enter(group);
     MRMediaRemoteGetNowPlayingApplicationIsPlaying(queue, ^(BOOL playing) {
-        ffStrbufAppendS(&result->status, playing ? "Playing" : "Paused");
+        ffStrbufSetStatic(&result->status, playing ? "Playing" : "Paused");
         dispatch_group_leave(group);
     });
 
@@ -67,7 +67,7 @@ static const char* getMedia(FFMediaResult* result)
     if(result->playerId.length > 0)
     {
         char buf[128];
-        snprintf(buf, sizeof(buf), "name of app id \"%s\"", result->playerId.chars);
+        snprintf(buf, ARRAY_SIZE(buf), "name of app id \"%s\"", result->playerId.chars);
         ffOsascript(buf, &result->player);
     }
 

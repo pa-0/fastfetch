@@ -17,15 +17,14 @@ const char* ffDetectAmdGpuInfo(const FFGpuDriverCondition* cond, FFGpuDriverResu
     if (!inited)
     {
         inited = true;
-        FF_LIBRARY_LOAD(libags, NULL, "dlopen amd_ags failed", soName , 1);
+        FF_LIBRARY_LOAD(libags, "dlopen amd_ags failed", soName , 1);
         FF_LIBRARY_LOAD_SYMBOL_MESSAGE(libags, agsInitialize)
-        FF_LIBRARY_LOAD_SYMBOL_MESSAGE(libags, agsDeInitialize)
 
         struct AGSContext* apiHandle;
         if (ffagsInitialize(AGS_CURRENT_VERSION, NULL, &apiHandle, &gpuInfo) != AGS_SUCCESS)
             return "loading ags library failed";
 
-        ffagsDeInitialize(apiHandle);
+        // agsDeInitialize will free pointers allocated in gpuInfo. Just leak them.
     }
 
     if (gpuInfo.numDevices == 0)
@@ -61,7 +60,16 @@ const char* ffDetectAmdGpuInfo(const FFGpuDriverCondition* cond, FFGpuDriverResu
     }
 
     if (result.frequency)
-        *result.frequency = device->coreClock / 1000.; // Maximum frequency
+        *result.frequency = (uint32_t) device->coreClock; // Maximum frequency
+
+    if (result.type)
+        *result.type = device->isAPU ? FF_GPU_TYPE_INTEGRATED : FF_GPU_TYPE_DISCRETE;
+
+    if (result.index)
+        *result.index = (uint32_t) device->adlAdapterIndex;
+
+    if (result.name)
+        ffStrbufSetS(result.name, device->adapterString);
 
     return NULL;
 }

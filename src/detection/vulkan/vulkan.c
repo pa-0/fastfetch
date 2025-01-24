@@ -39,19 +39,19 @@ static void applyDriverName(VkPhysicalDeviceDriverPropertiesKHR* properties, FFs
 
 static const char* detectVulkan(FFVulkanResult* result)
 {
-    FF_LIBRARY_LOAD(vulkan, &instance.config.library.libVulkan, "dlopen libvulkan"FF_LIBRARY_EXTENSION " failed",
-        #ifdef __APPLE__
-            "libMoltenVK"FF_LIBRARY_EXTENSION, -1
-        #elif defined(_WIN32)
-            "vulkan-1"FF_LIBRARY_EXTENSION, -1
+    FF_LIBRARY_LOAD(vulkan, "dlopen libvulkan" FF_LIBRARY_EXTENSION " failed",
+        #if __APPLE__
+            "libMoltenVK" FF_LIBRARY_EXTENSION, -1
+        #elif _WIN32
+            "vulkan-1" FF_LIBRARY_EXTENSION, -1
         #else
-            "libvulkan"FF_LIBRARY_EXTENSION, 2
+            "libvulkan" FF_LIBRARY_EXTENSION, 2
         #endif
     )
-    FF_LIBRARY_LOAD_SYMBOL_MESSAGE2(vulkan, vkGetInstanceProcAddr, vkGetInstanceProcAddr@8)
-    FF_LIBRARY_LOAD_SYMBOL_MESSAGE2(vulkan, vkCreateInstance, vkCreateInstance@12)
-    FF_LIBRARY_LOAD_SYMBOL_MESSAGE2(vulkan, vkDestroyInstance, vkDestroyInstance@8)
-    FF_LIBRARY_LOAD_SYMBOL_MESSAGE2(vulkan, vkEnumeratePhysicalDevices, vkEnumeratePhysicalDevices@12)
+    FF_LIBRARY_LOAD_SYMBOL_MESSAGE(vulkan, vkGetInstanceProcAddr)
+    FF_LIBRARY_LOAD_SYMBOL_MESSAGE(vulkan, vkCreateInstance)
+    FF_LIBRARY_LOAD_SYMBOL_MESSAGE(vulkan, vkDestroyInstance)
+    FF_LIBRARY_LOAD_SYMBOL_MESSAGE(vulkan, vkEnumeratePhysicalDevices)
 
     //Some drivers (nvdc) print messages to stdout
     //and that is the best way I found to disable that
@@ -76,7 +76,7 @@ static const char* detectVulkan(FFVulkanResult* result)
     );
 
     VkInstance vkInstance;
-    if(ffvkCreateInstance(&(VkInstanceCreateInfo) {
+    VkResult res = ffvkCreateInstance(&(VkInstanceCreateInfo) {
         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
         .pNext = NULL,
         .pApplicationInfo = &(VkApplicationInfo) {
@@ -95,8 +95,27 @@ static const char* detectVulkan(FFVulkanResult* result)
         .enabledExtensionCount = 0,
         .ppEnabledExtensionNames = NULL,
         .flags = 0
-    }, NULL, &vkInstance) != VK_SUCCESS)
-        return "ffvkCreateInstance() failed";
+    }, NULL, &vkInstance);
+    if(res != VK_SUCCESS)
+    {
+        switch (res)
+        {
+            case VK_ERROR_OUT_OF_HOST_MEMORY:
+                return "ffvkCreateInstance() failed: VK_ERROR_OUT_OF_HOST_MEMORY";
+            case VK_ERROR_OUT_OF_DEVICE_MEMORY:
+                return "ffvkCreateInstance() failed: VK_ERROR_OUT_OF_DEVICE_MEMORY";
+            case VK_ERROR_INITIALIZATION_FAILED:
+                return "ffvkCreateInstance() failed: VK_ERROR_INITIALIZATION_FAILED";
+            case VK_ERROR_LAYER_NOT_PRESENT:
+                return "ffvkCreateInstance() failed: VK_ERROR_LAYER_NOT_PRESENT";
+            case VK_ERROR_EXTENSION_NOT_PRESENT:
+                return "ffvkCreateInstance() failed: VK_ERROR_EXTENSION_NOT_PRESENT";
+            case VK_ERROR_INCOMPATIBLE_DRIVER:
+                return "ffvkCreateInstance() failed: VK_ERROR_INCOMPATIBLE_DRIVER";
+            default:
+                return "ffvkCreateInstance() failed: unknown error";
+        }
+    }
 
     //if instance creation succeeded, but vkEnumerateInstanceVersion didn't, this means we are running against a vulkan 1.0 implementation
     //explicitly set this version, if no device is found, so we still have at least this info
@@ -104,11 +123,24 @@ static const char* detectVulkan(FFVulkanResult* result)
         instanceVersion.major = 1;
 
     VkPhysicalDevice physicalDevices[128];
-    uint32_t physicalDeviceCount = (uint32_t) (sizeof(physicalDevices) / sizeof(*physicalDevices));
-    if(ffvkEnumeratePhysicalDevices(vkInstance, &physicalDeviceCount, physicalDevices) != VK_SUCCESS)
+    uint32_t physicalDeviceCount = (uint32_t) ARRAY_SIZE(physicalDevices);
+    res = ffvkEnumeratePhysicalDevices(vkInstance, &physicalDeviceCount, physicalDevices);
+    if(res != VK_SUCCESS)
     {
         ffvkDestroyInstance(vkInstance, NULL);
-        return "ffvkEnumeratePhysicalDevices() failed";
+        switch (res)
+        {
+        case VK_ERROR_OUT_OF_HOST_MEMORY:
+            return "ffvkEnumeratePhysicalDevices() failed: VK_ERROR_OUT_OF_HOST_MEMORY";
+        case VK_ERROR_OUT_OF_DEVICE_MEMORY:
+            return "ffvkEnumeratePhysicalDevices() failed: VK_ERROR_OUT_OF_DEVICE_MEMORY";
+        case VK_ERROR_INITIALIZATION_FAILED:
+            return "ffvkEnumeratePhysicalDevices() failed: VK_ERROR_INITIALIZATION_FAILED";
+        case VK_INCOMPLETE:
+            return "ffvkEnumeratePhysicalDevices() failed: VK_INCOMPLETE";
+        default:
+            return "ffvkEnumeratePhysicalDevices() failed";
+        }
     }
 
     PFN_vkGetPhysicalDeviceProperties ffvkGetPhysicalDeviceProperties = NULL;
@@ -186,7 +218,7 @@ static const char* detectVulkan(FFVulkanResult* result)
         ffStrbufInitS(&gpu->name, physicalDeviceProperties.properties.deviceName);
 
         gpu->type = physicalDeviceProperties.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? FF_GPU_TYPE_DISCRETE : FF_GPU_TYPE_INTEGRATED;
-        ffStrbufInitS(&gpu->vendor, ffGetGPUVendorString(physicalDeviceProperties.properties.vendorID));
+        ffStrbufInitS(&gpu->vendor, ffGPUGetVendorString(physicalDeviceProperties.properties.vendorID));
         ffStrbufInitS(&gpu->driver, driverProperties.driverInfo);
 
         VkPhysicalDeviceMemoryProperties memoryProperties = {};
@@ -202,9 +234,11 @@ static const char* detectVulkan(FFVulkanResult* result)
         }
 
         //No way to detect those using vulkan
+        gpu->index = FF_GPU_INDEX_UNSET;
         gpu->coreCount = FF_GPU_CORE_COUNT_UNSET;
         gpu->temperature = FF_GPU_TEMP_UNSET;
         gpu->frequency = FF_GPU_FREQUENCY_UNSET;
+        gpu->coreUsage = FF_GPU_CORE_USAGE_UNSET;
 
     next:
         continue;

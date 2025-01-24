@@ -5,90 +5,20 @@
 #include "util/mallocHelper.h"
 #include "util/windows/registry.h"
 #include "util/windows/unicode.h"
+#include "util/windows/version.h"
+#include "util/stringUtils.h"
 
 #include <windows.h>
 #include <wchar.h>
 #include <tlhelp32.h>
-#include <ntstatus.h>
-#include <winternl.h>
 
-static bool getProductVersion(const wchar_t* filePath, FFstrbuf* version)
-{
-    DWORD handle;
-    DWORD size = GetFileVersionInfoSizeW(filePath, &handle);
-    if(size > 0)
-    {
-        FF_AUTO_FREE void* versionData = malloc(size);
-        if(GetFileVersionInfoW(filePath, handle, size, versionData))
-        {
-            VS_FIXEDFILEINFO* verInfo;
-            UINT len;
-            if(VerQueryValueW(versionData, L"\\", (void**)&verInfo, &len) && len && verInfo->dwSignature == 0xFEEF04BD)
-            {
-                ffStrbufAppendF(version, "%u.%u.%u.%u",
-                    (unsigned)(( verInfo->dwProductVersionMS >> 16 ) & 0xffff),
-                    (unsigned)(( verInfo->dwProductVersionMS >>  0 ) & 0xffff),
-                    (unsigned)(( verInfo->dwProductVersionLS >> 16 ) & 0xffff),
-                    (unsigned)(( verInfo->dwProductVersionLS >>  0 ) & 0xffff)
-                );
-                return true;
-            }
-        }
-    }
-
-    return false;
-}
-
-static bool getProcessInfo(uint32_t pid, uint32_t* ppid, FFstrbuf* pname, FFstrbuf* exe, const char** exeName, FFstrbuf* exePath, bool* gui)
-{
-    FF_AUTO_CLOSE_FD HANDLE hProcess = pid == 0
-        ? GetCurrentProcess()
-        : OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, TRUE, pid);
-
-    if (gui)
-        *gui = GetGuiResources(hProcess, GR_GDIOBJECTS) > 0;
-
-    if(ppid)
-    {
-        PROCESS_BASIC_INFORMATION info = {};
-        ULONG size;
-        if(NT_SUCCESS(NtQueryInformationProcess(hProcess, ProcessBasicInformation, &info, sizeof(info), &size)))
-        {
-            assert(size == sizeof(info));
-            *ppid = (uint32_t)info.InheritedFromUniqueProcessId;
-        }
-        else
-            return false;
-    }
-    if(exe)
-    {
-        DWORD bufSize = exe->allocated;
-        if(QueryFullProcessImageNameA(hProcess, 0, exe->chars, &bufSize))
-        {
-            // We use full path here
-            // Querying command line of remote processes in Windows requires either WMI or ReadProcessMemory
-            exe->length = bufSize;
-            if (exePath) ffStrbufSet(exePath, exe);
-        }
-        else
-            return false;
-    }
-    if(pname && exeName)
-    {
-        *exeName = exe->chars + ffStrbufLastIndexC(exe, '\\') + 1;
-        ffStrbufSetS(pname, *exeName);
-    }
-
-    return true;
-}
-
-bool fftsGetShellVersion(FFstrbuf* exe, const char* exeName, FFstrbuf* version);
+bool fftsGetShellVersion(FFstrbuf* exe, const char* exeName, const FFstrbuf* exePath, FFstrbuf* version);
 
 static uint32_t getShellInfo(FFShellResult* result, uint32_t pid)
 {
     uint32_t ppid = 0;
 
-    while (pid != 0 && getProcessInfo(pid, &ppid, &result->processName, &result->exe, &result->exeName, &result->exePath, NULL))
+    while (pid != 0 && ffProcessGetInfoWindows(pid, &ppid, &result->processName, &result->exe, &result->exeName, &result->exePath, NULL))
     {
         ffStrbufSet(&result->prettyName, &result->processName);
         if(ffStrbufEndsWithIgnCaseS(&result->prettyName, ".exe"))
@@ -98,7 +28,6 @@ static uint32_t getShellInfo(FFShellResult* result, uint32_t pid)
         if(
             ffStrbufIgnCaseEqualS(&result->prettyName, "sudo")          ||
             ffStrbufIgnCaseEqualS(&result->prettyName, "su")            ||
-            ffStrbufIgnCaseEqualS(&result->prettyName, "sshd")          ||
             ffStrbufIgnCaseEqualS(&result->prettyName, "gdb")           ||
             ffStrbufIgnCaseEqualS(&result->prettyName, "lldb")          ||
             ffStrbufIgnCaseEqualS(&result->prettyName, "python")        || // python on windows generates shim executables
@@ -144,21 +73,24 @@ static void setShellInfoDetails(FFShellResult* result)
     {
         ffStrbufSetS(&result->prettyName, "CMD");
 
-        FF_AUTO_CLOSE_FD HANDLE snapshot = NULL;
-        while(!(snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, result->pid)) && GetLastError() == ERROR_BAD_LENGTH) {}
-
-        if(snapshot)
+        if (instance.config.general.detectVersion)
         {
-            MODULEENTRY32W module;
-            module.dwSize = sizeof(module);
-            for(BOOL success = Module32FirstW(snapshot, &module); success; success = Module32NextW(snapshot, &module))
+            FF_AUTO_CLOSE_FD HANDLE snapshot = NULL;
+            while(!(snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, result->pid)) && GetLastError() == ERROR_BAD_LENGTH) {}
+
+            if(snapshot)
             {
-                if(wcsncmp(module.szModule, L"clink_dll_", strlen("clink_dll_")) == 0)
+                MODULEENTRY32W module;
+                module.dwSize = sizeof(module);
+                for(BOOL success = Module32FirstW(snapshot, &module); success; success = Module32NextW(snapshot, &module))
                 {
-                    ffStrbufAppendS(&result->prettyName, " (with Clink ");
-                    getProductVersion(module.szExePath, &result->prettyName);
-                    ffStrbufAppendC(&result->prettyName, ')');
-                    break;
+                    if(wcsncmp(module.szModule, L"clink_dll_", strlen("clink_dll_")) == 0)
+                    {
+                        ffStrbufAppendS(&result->prettyName, " (with Clink ");
+                        ffGetFileVersion(module.szExePath, &result->prettyName);
+                        ffStrbufAppendC(&result->prettyName, ')');
+                        break;
+                    }
                 }
             }
         }
@@ -183,7 +115,7 @@ static bool getTerminalFromEnv(FFTerminalResult* result)
         //ConEmu
         uint32_t pid = (uint32_t) strtoul(term, NULL, 10);
         result->pid = pid;
-        if(getProcessInfo(pid, NULL, &result->processName, &result->exe, &result->exeName, &result->exePath, NULL))
+        if(ffProcessGetInfoWindows(pid, NULL, &result->processName, &result->exe, &result->exeName, &result->exePath, NULL))
         {
             ffStrbufSet(&result->prettyName, &result->processName);
             if(ffStrbufEndsWithIgnCaseS(&result->prettyName, ".exe"))
@@ -197,7 +129,7 @@ static bool getTerminalFromEnv(FFTerminalResult* result)
     }
 
     //SSH
-    if(getenv("SSH_CONNECTION") != NULL)
+    if(getenv("SSH_TTY") != NULL)
         term = getenv("SSH_TTY");
 
     //Windows Terminal
@@ -289,10 +221,17 @@ conhost:
 
 static uint32_t getTerminalInfo(FFTerminalResult* result, uint32_t pid)
 {
+    if (getenv("MSYSTEM"))
+    {
+        // Don't try to detect terminals in MSYS shell
+        // It won't work because MSYS doesn't follow process tree of native Windows programs
+        return 0;
+    }
+
     uint32_t ppid = 0;
     bool hasGui;
 
-    while (pid != 0 && getProcessInfo(pid, &ppid, &result->processName, &result->exe, &result->exeName, &result->exePath, &hasGui))
+    while (pid != 0 && ffProcessGetInfoWindows(pid, &ppid, &result->processName, &result->exe, &result->exeName, &result->exePath, &hasGui))
     {
         if(!hasGui || ffStrbufIgnCaseEqualS(&result->processName, "far.exe")) // Far includes GUI objects...
         {
@@ -350,6 +289,11 @@ static void setTerminalInfoDetails(FFTerminalResult* result)
         ffStrbufSetStatic(&result->prettyName, "Windows Explorer");
     else if(ffStrbufEqualS(&result->prettyName, "wezterm-gui"))
         ffStrbufSetStatic(&result->prettyName, "WezTerm");
+    else if(ffStrbufIgnCaseEqualS(&result->prettyName, "sshd") || ffStrbufStartsWithIgnCaseS(&result->prettyName, "sshd-"))
+    {
+        const char* tty = getenv("SSH_TTY");
+        if (tty) ffStrbufSetS(&result->prettyName, tty);
+    }
 }
 
 bool fftsGetTerminalVersion(FFstrbuf* processName, FFstrbuf* exe, FFstrbuf* version);
@@ -373,8 +317,12 @@ const FFShellResult* ffDetectShell(void)
     result.tty = -1;
 
     uint32_t ppid;
-    if(!getProcessInfo(0, &ppid, NULL, NULL, NULL, NULL, NULL))
+    if(!ffProcessGetInfoWindows(0, &ppid, NULL, NULL, NULL, NULL, NULL))
         return &result;
+
+    const char* ignoreParent = getenv("FFTS_IGNORE_PARENT");
+    if (ignoreParent && ffStrEquals(ignoreParent, "1"))
+        ffProcessGetInfoWindows(ppid, &ppid, NULL, NULL, NULL, NULL, NULL);
 
     ppid = getShellInfo(&result, ppid);
 
@@ -385,7 +333,7 @@ const FFShellResult* ffDetectShell(void)
         strcpy(tmp, result.exeName);
         char* ext = strrchr(tmp, '.');
         if (ext) *ext = '\0';
-        fftsGetShellVersion(&result.exe, tmp, &result.version);
+        fftsGetShellVersion(&result.exe, tmp, &result.exePath, &result.version);
     }
 
     return &result;

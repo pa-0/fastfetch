@@ -3,13 +3,13 @@
 #include "fastfetch.h"
 
 #define FF_DE_PRETTY_PLASMA "KDE Plasma"
-#define FF_DE_PRETTY_GNOME "Gnome"
-#define FF_DE_PRETTY_GNOME_CLASSIC "Gnome Classic"
+#define FF_DE_PRETTY_GNOME "GNOME"
+#define FF_DE_PRETTY_GNOME_CLASSIC "GNOME Classic"
 #define FF_DE_PRETTY_XFCE4 "Xfce4"
 #define FF_DE_PRETTY_CINNAMON "Cinnamon"
 #define FF_DE_PRETTY_MATE "Mate"
 #define FF_DE_PRETTY_LXDE "LXDE"
-#define FF_DE_PRETTY_LXQT "LXQT"
+#define FF_DE_PRETTY_LXQT "LXQt"
 #define FF_DE_PRETTY_BUDGIE "Budgie"
 #define FF_DE_PRETTY_CDE "CDE"
 #define FF_DE_PRETTY_UNITY "Unity"
@@ -36,30 +36,51 @@
 #define FF_WM_PRETTY_ICEWM "IceWM"
 #define FF_WM_PRETTY_SPECTRWM "spectrwm"
 #define FF_WM_PRETTY_DTWM "dtwm"
-
+#define FF_WM_PRETTY_FVWM "fvwm"
+#define FF_WM_PRETTY_CTWM "ctwm"
+#define FF_WM_PRETTY_RATPOISON "ratpoison"
 
 #define FF_WM_PROTOCOL_TTY "TTY"
 #define FF_WM_PROTOCOL_X11 "X11"
 #define FF_WM_PROTOCOL_WAYLAND "Wayland"
 
-typedef enum FFDisplayType {
+typedef enum __attribute__((__packed__)) FFDisplayType {
     FF_DISPLAY_TYPE_UNKNOWN,
     FF_DISPLAY_TYPE_BUILTIN,
     FF_DISPLAY_TYPE_EXTERNAL,
 } FFDisplayType;
 
+typedef enum __attribute__((__packed__)) FFDisplayHdrStatus
+{
+    FF_DISPLAY_HDR_STATUS_UNKNOWN,
+    FF_DISPLAY_HDR_STATUS_UNSUPPORTED,
+    FF_DISPLAY_HDR_STATUS_SUPPORTED,
+    FF_DISPLAY_HDR_STATUS_ENABLED,
+} FFDisplayHdrStatus;
+
 typedef struct FFDisplayResult
 {
-    uint32_t width;
-    uint32_t height;
-    double refreshRate;
-    uint32_t scaledWidth;
-    uint32_t scaledHeight;
+    uint32_t width; // in px
+    uint32_t height; // in px
+    double refreshRate; // in Hz
+    uint32_t scaledWidth; // in px
+    uint32_t scaledHeight; // in px
+    uint32_t preferredWidth; // in px
+    uint32_t preferredHeight; // in px
+    double preferredRefreshRate; // in Hz
     FFstrbuf name;
     FFDisplayType type;
     uint32_t rotation;
-    bool primary;
     uint64_t id; // platform dependent
+    uint32_t physicalWidth; // in mm
+    uint32_t physicalHeight; // in mm
+    bool primary;
+    const char* platformApi;
+    uint8_t bitDepth;
+    FFDisplayHdrStatus hdrStatus;
+    uint16_t manufactureYear;
+    uint16_t manufactureWeek;
+    uint32_t serial;
 } FFDisplayResult;
 
 typedef struct FFDisplayServerResult
@@ -74,15 +95,21 @@ typedef struct FFDisplayServerResult
 
 const FFDisplayServerResult* ffConnectDisplayServer();
 
-bool ffdsAppendDisplay(
+FFDisplayResult* ffdsAppendDisplay(
     FFDisplayServerResult* result,
     uint32_t width,
     uint32_t height,
     double refreshRate,
     uint32_t scaledWidth,
     uint32_t scaledHeight,
+    uint32_t preferredWidth,
+    uint32_t preferredHeight,
+    double preferredRefreshRate,
     uint32_t rotation,
     FFstrbuf* name,
     FFDisplayType type,
     bool primary,
-    uint64_t id);
+    uint64_t id,
+    uint32_t physicalWidth,
+    uint32_t physicalHeight,
+    const char* platformApi);

@@ -28,17 +28,39 @@ const char* ffDetectWifi(FFlist* result)
             ffStrbufInit(&item->inf.status);
             ffStrbufInit(&item->conn.status);
             ffStrbufInit(&item->conn.ssid);
-            ffStrbufInit(&item->conn.macAddress);
+            ffStrbufInit(&item->conn.bssid);
             ffStrbufInit(&item->conn.protocol);
             ffStrbufInit(&item->conn.security);
             item->conn.signalQuality = 0.0/0.0;
             item->conn.rxRate = 0.0/0.0;
             item->conn.txRate = 0.0/0.0;
+            item->conn.channel = 0;
+            item->conn.frequency = 0;
+
+            ffParsePropLines(ifconfig.chars, "status: ", &item->conn.status);
+            if (!ffStrbufEqualS(&item->conn.status, "associated"))
+                continue;
 
             ffParsePropLines(ifconfig.chars, "ssid ", &item->conn.ssid);
-            if (item->conn.ssid.length) ffStrbufSubstrBeforeFirstC(&item->conn.ssid, ' ');
+            if (item->conn.ssid.length)
+            {
+                // This doesn't work for quoted SSID values
+                uint32_t idx = ffStrbufFirstIndexS(&item->conn.ssid, " bssid ");
+                if (idx < item->conn.ssid.length)
+                {
+                    ffStrbufSetS(&item->conn.bssid, item->conn.ssid.chars + idx + (uint32_t) strlen(" bssid "));
+                    ffStrbufSubstrBefore(&item->conn.ssid, idx);
+                }
 
-            ffParsePropLines(ifconfig.chars, "ether ", &item->conn.macAddress);
+                idx = ffStrbufFirstIndexS(&item->conn.ssid, " channel ");
+                if (idx < item->conn.ssid.length)
+                {
+                    const char* pchannel = item->conn.ssid.chars + idx + strlen(" channel ");
+                    sscanf(pchannel, "%hu (%hu MHz %*s)", &item->conn.channel, &item->conn.frequency);
+                }
+
+                ffStrbufSubstrBefore(&item->conn.ssid, idx);
+            }
 
             ffParsePropLines(ifconfig.chars, "media: ", &item->conn.protocol);
             if (item->conn.protocol.length)
@@ -52,8 +74,6 @@ const char* ffDetectWifi(FFlist* result)
                     ffStrbufPrependS(&item->conn.protocol, "802.");
                 }
             }
-
-            ffParsePropLines(ifconfig.chars, "status: ", &item->conn.macAddress);
         }
     }
 

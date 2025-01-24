@@ -1,6 +1,6 @@
 #include "cpu.h"
-#include "detection/temps/temps_windows.h"
 #include "util/windows/registry.h"
+#include "util/windows/nt.h"
 #include "util/mallocHelper.h"
 #include "util/smbiosHelper.h"
 
@@ -48,36 +48,18 @@ typedef struct FFSmbiosProcessorInfo
 
     // 3.6+
     uint16_t ThreadEnabled; // varies
-} FFSmbiosProcessorInfo;
+} __attribute__((__packed__)) FFSmbiosProcessorInfo;
 
-#if defined(__x86_64__) || defined(__i386__)
-
-#include <cpuid.h>
-
-inline static const char* detectSpeedByCpuid(FFCPUResult* cpu)
-{
-    uint32_t base = 0, max = 0, bus = 0, unused = 0;
-    if (!__get_cpuid(0x16, &base, &max, &bus, &unused))
-        return "Unsupported instruction";
-
-    // cpuid returns 0 MHz when hyper-v is enabled
-    if (base) cpu->frequencyBase = base / 1000.0;
-    if (max) cpu->frequencyMax = max / 1000.0;
-    return NULL;
-}
-
-#else
-
-inline static const char* detectSpeedByCpuid(FF_MAYBE_UNUSED FFCPUResult* cpu)
-{
-    return "Unsupported platform";
-}
-
-#endif
+static_assert(offsetof(FFSmbiosProcessorInfo, ThreadEnabled) == 0x30,
+    "FFSmbiosProcessorInfo: Wrong struct alignment");
 
 static const char* detectMaxSpeedBySmbios(FFCPUResult* cpu)
 {
-    const FFSmbiosProcessorInfo* data = (const FFSmbiosProcessorInfo*) (*ffGetSmbiosHeaderTable())[FF_SMBIOS_TYPE_PROCESSOR_INFO];
+    const FFSmbiosHeaderTable* smbiosTable = ffGetSmbiosHeaderTable();
+    if (!smbiosTable)
+        return "Failed to get SMBIOS data";
+
+    const FFSmbiosProcessorInfo* data = (const FFSmbiosProcessorInfo*) (*smbiosTable)[FF_SMBIOS_TYPE_PROCESSOR_INFO];
 
     if (!data)
         return "Processor information is not found in SMBIOS data";
@@ -89,7 +71,7 @@ static const char* detectMaxSpeedBySmbios(FFCPUResult* cpu)
             return "No active CPU is found in SMBIOS data";
     }
 
-    double speed = data->MaxSpeed / 1000.0;
+    uint32_t speed = data->MaxSpeed;
     // Sometimes SMBIOS reports invalid value. We assume that max speed is small than 2x of base
     if (speed < cpu->frequencyBase || speed > cpu->frequencyBase * 2)
         return "Possible invalid CPU max speed in SMBIOS data. See #800";
@@ -118,9 +100,7 @@ static const char* detectNCores(FFCPUResult* cpu)
         ptr = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*)(((uint8_t*)ptr) + ptr->Size)
     )
     {
-        if(ptr->Relationship == RelationProcessorCore)
-            ++cpu->coresPhysical;
-        else if(ptr->Relationship == RelationGroup)
+        if (ptr->Relationship == RelationGroup)
         {
             for (uint32_t index = 0; index < ptr->Group.ActiveGroupCount; ++index)
             {
@@ -128,6 +108,10 @@ static const char* detectNCores(FFCPUResult* cpu)
                 cpu->coresLogical += ptr->Group.GroupInfo[index].MaximumProcessorCount;
             }
         }
+        else if (ptr->Relationship == RelationProcessorCore)
+            ++cpu->coresPhysical;
+        else if (ptr->Relationship == RelationProcessorPackage)
+            cpu->packages++;
     }
 
     return NULL;
@@ -139,13 +123,6 @@ static const char* detectByRegistry(FFCPUResult* cpu)
     if(!ffRegOpenKeyForRead(HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", &hKey, NULL))
         return "ffRegOpenKeyForRead(HKEY_LOCAL_MACHINE, L\"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0\", &hKey, NULL) failed";
 
-    if (detectSpeedByCpuid(cpu) != NULL || cpu->frequencyBase != cpu->frequencyBase)
-    {
-        uint32_t mhz;
-        if(ffRegReadUint(hKey, L"~MHz", &mhz, NULL))
-            cpu->frequencyBase = mhz / 1000.0;
-    }
-
     ffRegReadStrbuf(hKey, L"ProcessorNameString", &cpu->name, NULL);
     ffRegReadStrbuf(hKey, L"VendorIdentifier", &cpu->vendor, NULL);
 
@@ -156,8 +133,35 @@ static const char* detectByRegistry(FFCPUResult* cpu)
             cpu->coresOnline = cpu->coresPhysical = cpu->coresLogical = (uint16_t) cores;
     }
 
+    uint32_t mhz;
+    if(ffRegReadUint(hKey, L"~MHz", &mhz, NULL))
+        cpu->frequencyBase = mhz;
+
     return NULL;
 }
+
+static const char* detectCoreTypes(FFCPUResult* cpu)
+{
+    FF_AUTO_FREE PROCESSOR_POWER_INFORMATION* pinfo = calloc(cpu->coresLogical, sizeof(PROCESSOR_POWER_INFORMATION));
+    if (!NT_SUCCESS(NtPowerInformation(ProcessorInformation, NULL, 0, pinfo, (ULONG) sizeof(PROCESSOR_POWER_INFORMATION) * cpu->coresLogical)))
+        return "NtPowerInformation(ProcessorInformation, NULL, 0, pinfo, size) failed";
+
+    for (uint32_t icore = 0; icore < cpu->coresLogical && pinfo[icore].MhzLimit; ++icore)
+    {
+        uint32_t ifreq = 0;
+        while (cpu->coreTypes[ifreq].freq != pinfo[icore].MhzLimit && cpu->coreTypes[ifreq].freq > 0)
+            ++ifreq;
+        if (cpu->coreTypes[ifreq].freq == 0)
+            cpu->coreTypes[ifreq].freq = pinfo[icore].MhzLimit;
+        ++cpu->coreTypes[ifreq].count;
+    }
+
+    if (cpu->frequencyBase == 0)
+        cpu->frequencyBase = pinfo->MaxMhz;
+    return NULL;
+}
+
+const char* detectThermalTemp(double* current, double* critical);
 
 const char* ffDetectCPUImpl(const FFCPUOptions* options, FFCPUResult* cpu)
 {
@@ -167,11 +171,14 @@ const char* ffDetectCPUImpl(const FFCPUOptions* options, FFCPUResult* cpu)
     if (error)
         return error;
 
-    if (cpu->frequencyMax != cpu->frequencyMax)
+    ffCPUDetectSpeedByCpuid(cpu);
+    if (options->showPeCoreCount) detectCoreTypes(cpu);
+
+    if (cpu->frequencyMax == 0)
         detectMaxSpeedBySmbios(cpu);
 
     if(options->temp)
-        ffDetectSmbiosTemp(&cpu->temperature, NULL);
+        detectThermalTemp(&cpu->temperature, NULL);
 
     return NULL;
 }

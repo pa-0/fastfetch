@@ -16,7 +16,7 @@ const char* ffDetectBrightness(FF_MAYBE_UNUSED FFBrightnessOptions* options, FFl
 
     for (char i = '0'; i <= '9'; ++i)
     {
-        path[sizeof(path) - 2] = i;
+        path[ARRAY_SIZE(path) - 2] = i;
 
         FF_AUTO_CLOSE_FD int blfd = open(path, O_RDONLY | O_CLOEXEC);
         if (blfd < 0)
@@ -34,7 +34,7 @@ const char* ffDetectBrightness(FF_MAYBE_UNUSED FFBrightnessOptions* options, FFl
         brightness->current = status.brightness;
 
         struct backlight_info info;
-        if(ioctl(blfd, BACKLIGHTGETINFO, &info) < 0)
+        if(ioctl(blfd, BACKLIGHTGETINFO, &info) == 0)
             ffStrbufAppendS(&brightness->name, info.name);
         else
             ffStrbufAppendS(&brightness->name, path + strlen("/dev/backlight/"));

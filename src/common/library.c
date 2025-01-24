@@ -1,6 +1,8 @@
 #include "fastfetch.h"
 #include "common/library.h"
 
+#ifndef FF_DISABLE_DLOPEN
+
 #include <stdarg.h>
 
 //Clang doesn't define __SANITIZE_ADDRESS__ but defines __has_feature(address_sanitizer)
@@ -26,6 +28,17 @@ static void* libraryLoad(const char* path, int maxVersion)
 
     // libX.dll.1 never exists on Windows, while libX-1.dll may exist
     FF_UNUSED(maxVersion)
+
+    if(result != NULL)
+        return result;
+
+    uint32_t pathLen = ffStrbufLastIndexC(&instance.state.platform.exePath, '/');
+    if (pathLen == instance.state.platform.exePath.length)
+        return result;
+
+    char absPath[MAX_PATH + 1];
+    strcpy(mempcpy(absPath, instance.state.platform.exePath.chars, pathLen + 1), path);
+    return dlopen(absPath, FF_DLOPEN_FLAGS);
 
     #else
 
@@ -53,27 +66,29 @@ static void* libraryLoad(const char* path, int maxVersion)
     return result;
 }
 
-void* ffLibraryLoad(const FFstrbuf* userProvidedName, ...)
+void* ffLibraryLoad(const char* path, int maxVersion, ...)
 {
-    if(userProvidedName != NULL && userProvidedName->length > 0)
-        return dlopen(userProvidedName->chars, FF_DLOPEN_FLAGS);
+    void* result = libraryLoad(path, maxVersion);
 
-    va_list defaultNames;
-    va_start(defaultNames, userProvidedName);
-
-    void* result = NULL;
-
-    while(result == NULL)
+    if (!result)
     {
-        const char* path = va_arg(defaultNames, const char*);
-        if(path == NULL)
-            break;
+        va_list defaultNames;
+        va_start(defaultNames, maxVersion);
 
-        int maxVersion = va_arg(defaultNames, int);
-        result = libraryLoad(path, maxVersion);
+        do
+        {
+            const char* pathRest = va_arg(defaultNames, const char*);
+            if(pathRest == NULL)
+                break;
+
+            int maxVersionRest = va_arg(defaultNames, int);
+            result = libraryLoad(pathRest, maxVersionRest);
+        } while (!result);
+
+        va_end(defaultNames);
     }
-
-    va_end(defaultNames);
 
     return result;
 }
+
+#endif

@@ -5,12 +5,21 @@
 #include "common/option.h"
 #include "common/percent.h"
 
-typedef enum FFGPUType
+typedef enum __attribute__((__packed__)) FFGPUType
 {
     FF_GPU_TYPE_UNKNOWN,
     FF_GPU_TYPE_INTEGRATED,
     FF_GPU_TYPE_DISCRETE,
 } FFGPUType;
+
+typedef enum __attribute__((__packed__)) FFGPUDetectionMethod
+{
+    FF_GPU_DETECTION_METHOD_AUTO,
+    FF_GPU_DETECTION_METHOD_PCI,
+    FF_GPU_DETECTION_METHOD_VULKAN,
+    FF_GPU_DETECTION_METHOD_OPENCL,
+    FF_GPU_DETECTION_METHOD_OPENGL,
+} FFGPUDetectionMethod;
 
 typedef struct FFGPUOptions
 {
@@ -18,9 +27,10 @@ typedef struct FFGPUOptions
     FFModuleArgs moduleArgs;
 
     FFGPUType hideType;
+    FFGPUDetectionMethod detectionMethod;
     bool temp;
     bool driverSpecific;
-    bool forceVulkan;
+    bool forceMethod;
     FFColorRangeConfig tempConfig;
-    FFColorRangeConfig percent;
+    FFPercentageModuleConfig percent;
 } FFGPUOptions;

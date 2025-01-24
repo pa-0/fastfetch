@@ -7,13 +7,11 @@
 
 #pragma GCC diagnostic ignored "-Wformat" // warning: unknown conversion type character 'F' in format
 
-#define FF_USERS_NUM_FORMAT_ARGS 5
-
 void ffPrintUsers(FFUsersOptions* options)
 {
     FF_LIST_AUTO_DESTROY users = ffListCreate(sizeof(FFUserResult));
 
-    const char* error = ffDetectUsers(&users);
+    const char* error = ffDetectUsers(options, &users);
 
     if(error)
     {
@@ -38,7 +36,7 @@ void ffPrintUsers(FFUsersOptions* options)
             {
                 if(i > 0)
                     ffStrbufAppendS(&result, ", ");
-                FFUserResult* user = (FFUserResult*)ffListGet(&users, i);
+                FFUserResult* user = FF_LIST_GET(FFUserResult, users, i);
                 ffStrbufAppend(&result, &user->name);
             }
             ffStrbufPutTo(&result, stdout);
@@ -47,7 +45,7 @@ void ffPrintUsers(FFUsersOptions* options)
         {
             for(uint32_t i = 0; i < users.length; ++i)
             {
-                FFUserResult* user = (FFUserResult*)ffListGet(&users, i);
+                FFUserResult* user = FF_LIST_GET(FFUserResult, users, i);
 
                 ffPrintLogoAndKey(FF_USERS_MODULE_NAME, users.length == 1 ? 0 : (uint8_t) (i + 1), &options->moduleArgs, FF_PRINT_TYPE_DEFAULT);
 
@@ -66,14 +64,14 @@ void ffPrintUsers(FFUsersOptions* options)
     {
         for(uint32_t i = 0; i < users.length; ++i)
         {
-            FFUserResult* user = (FFUserResult*)ffListGet(&users, i);
+            FFUserResult* user = FF_LIST_GET(FFUserResult, users, i);
 
-            FF_PRINT_FORMAT_CHECKED(FF_USERS_MODULE_NAME, users.length == 1 ? 0 : (uint8_t) (i + 1), &options->moduleArgs, FF_PRINT_TYPE_DEFAULT, FF_USERS_NUM_FORMAT_ARGS, ((FFformatarg[]){
-                {FF_FORMAT_ARG_TYPE_STRBUF, &user->name},
-                {FF_FORMAT_ARG_TYPE_STRBUF, &user->hostName},
-                {FF_FORMAT_ARG_TYPE_STRBUF, &user->sessionName},
-                {FF_FORMAT_ARG_TYPE_STRBUF, &user->clientIp},
-                {FF_FORMAT_ARG_TYPE_STRING, ffTimeToShortStr(user->loginTime)},
+            FF_PRINT_FORMAT_CHECKED(FF_USERS_MODULE_NAME, users.length == 1 ? 0 : (uint8_t) (i + 1), &options->moduleArgs, FF_PRINT_TYPE_DEFAULT, ((FFformatarg[]){
+                FF_FORMAT_ARG(user->name, "name"),
+                FF_FORMAT_ARG(user->hostName, "host-name"),
+                FF_FORMAT_ARG(user->sessionName, "session-name"),
+                FF_FORMAT_ARG(user->clientIp, "client-ip"),
+                {FF_FORMAT_ARG_TYPE_STRING, ffTimeToShortStr(user->loginTime), "login-time"},
             }));
         }
     }
@@ -94,9 +92,15 @@ bool ffParseUsersCommandOptions(FFUsersOptions* options, const char* key, const 
     if (ffOptionParseModuleArgs(key, subKey, value, &options->moduleArgs))
         return true;
 
-    if(ffStrEqualsIgnCase(subKey, "compact"))
+    if (ffStrEqualsIgnCase(subKey, "compact"))
     {
         options->compact = ffOptionParseBoolean(value);
+        return true;
+    }
+
+    if (ffStrEqualsIgnCase(subKey, "myself-only"))
+    {
+        options->myselfOnly = ffOptionParseBoolean(value);
         return true;
     }
 
@@ -110,7 +114,7 @@ void ffParseUsersJsonObject(FFUsersOptions* options, yyjson_val* module)
     yyjson_obj_foreach(module, idx, max, key_, val)
     {
         const char* key = yyjson_get_str(key_);
-        if(ffStrEqualsIgnCase(key, "type"))
+        if (ffStrEqualsIgnCase(key, "type"))
             continue;
 
         if (ffJsonConfigParseModuleArgs(key, val, &options->moduleArgs))
@@ -119,6 +123,12 @@ void ffParseUsersJsonObject(FFUsersOptions* options, yyjson_val* module)
         if (ffStrEqualsIgnCase(key, "compact"))
         {
             options->compact = yyjson_get_bool(val);
+            continue;
+        }
+
+        if (ffStrEqualsIgnCase(key, "myselfOnly"))
+        {
+            options->myselfOnly = yyjson_get_bool(val);
             continue;
         }
 
@@ -135,13 +145,16 @@ void ffGenerateUsersJsonConfig(FFUsersOptions* options, yyjson_mut_doc* doc, yyj
 
     if (options->compact != defaultOptions.compact)
         yyjson_mut_obj_add_bool(doc, module, "compact", options->compact);
+
+    if (options->myselfOnly != defaultOptions.myselfOnly)
+        yyjson_mut_obj_add_bool(doc, module, "myselfOnly", options->myselfOnly);
 }
 
-void ffGenerateUsersJsonResult(FF_MAYBE_UNUSED FFUsersOptions* options, yyjson_mut_doc* doc, yyjson_mut_val* module)
+void ffGenerateUsersJsonResult(FFUsersOptions* options, yyjson_mut_doc* doc, yyjson_mut_val* module)
 {
     FF_LIST_AUTO_DESTROY results = ffListCreate(sizeof(FFUserResult));
 
-    const char* error = ffDetectUsers(&results);
+    const char* error = ffDetectUsers(options, &results);
 
     if(error)
     {
@@ -173,33 +186,30 @@ void ffGenerateUsersJsonResult(FF_MAYBE_UNUSED FFUsersOptions* options, yyjson_m
     }
 }
 
-void ffPrintUsersHelpFormat(void)
-{
-    FF_PRINT_MODULE_FORMAT_HELP_CHECKED(FF_USERS_MODULE_NAME, "{1}@{2} - login time {5}", FF_USERS_NUM_FORMAT_ARGS, ((const char* []) {
-        "User name",
-        "Host name",
-        "Session name",
-        "Client IP",
-        "Login Time in local timezone"
-    }));
-}
+static FFModuleBaseInfo ffModuleInfo = {
+    .name = FF_USERS_MODULE_NAME,
+    .description = "Print users currently logged in",
+    .parseCommandOptions = (void*) ffParseUsersCommandOptions,
+    .parseJsonObject = (void*) ffParseUsersJsonObject,
+    .printModule = (void*) ffPrintUsers,
+    .generateJsonResult = (void*) ffGenerateUsersJsonResult,
+    .generateJsonConfig = (void*) ffGenerateUsersJsonConfig,
+    .formatArgs = FF_FORMAT_ARG_LIST(((FFModuleFormatArg[]) {
+        {"User name", "name"},
+        {"Host name", "host-name"},
+        {"Session name", "session"},
+        {"Client IP", "client-ip"},
+        {"Login Time in local timezone", "login-time"},
+    }))
+};
 
 void ffInitUsersOptions(FFUsersOptions* options)
 {
-    ffOptionInitModuleBaseInfo(
-        &options->moduleInfo,
-        FF_USERS_MODULE_NAME,
-        "Print users currently logged in",
-        ffParseUsersCommandOptions,
-        ffParseUsersJsonObject,
-        ffPrintUsers,
-        ffGenerateUsersJsonResult,
-        ffPrintUsersHelpFormat,
-        ffGenerateUsersJsonConfig
-    );
-    ffOptionInitModuleArg(&options->moduleArgs);
+    options->moduleInfo = ffModuleInfo;
+    ffOptionInitModuleArg(&options->moduleArgs, "");
 
     options->compact = false;
+    options->myselfOnly = false;
 }
 
 void ffDestroyUsersOptions(FFUsersOptions* options)

@@ -19,11 +19,11 @@ static void parseSystemVersion(FFOSResult* os)
 
     NSString* value;
 
-    if((value = [dict valueForKey:@"ProductName"]))
+    if((value = dict[@"ProductName"]))
         ffStrbufInitS(&os->name, value.UTF8String);
-    if((value = [dict valueForKey:@"ProductUserVisibleVersion"]))
+    if((value = dict[@"ProductUserVisibleVersion"]))
         ffStrbufInitS(&os->version, value.UTF8String);
-    if((value = [dict valueForKey:@"ProductBuildVersion"]))
+    if((value = dict[@"ProductBuildVersion"]))
         ffStrbufInitS(&os->buildID, value.UTF8String);
 }
 
@@ -37,6 +37,7 @@ static bool detectOSCodeName(FFOSResult* os)
 
     switch (num)
     {
+        case 15: ffStrbufSetStatic(&os->codename, "Sequoia"); return true;
         case 14: ffStrbufSetStatic(&os->codename, "Sonoma"); return true;
         case 13: ffStrbufSetStatic(&os->codename, "Ventura"); return true;
         case 12: ffStrbufSetStatic(&os->codename, "Monterey"); return true;
@@ -61,7 +62,7 @@ static bool detectOSCodeName(FFOSResult* os)
                 case 6: ffStrbufSetStatic(&os->codename, "Snow Leopard"); return true;
                 case 5: ffStrbufSetStatic(&os->codename, "Leopard"); return true;
                 case 4: ffStrbufSetStatic(&os->codename, "Tiger"); return true;
-                case 3: ffStrbufSetStatic(&os->codename, "Panther"); return true;
+                case 3: ffStrbufSetStatic(&os->codename, "Panther"); ffStrbufSetStatic(&os->prettyName, "Mac OS X"); return true;
                 case 2: ffStrbufSetStatic(&os->codename, "Jaguar"); return true;
                 case 1: ffStrbufSetStatic(&os->codename, "Puma"); return true;
                 case 0: ffStrbufSetStatic(&os->codename, "Cheetah"); return true;
@@ -97,8 +98,7 @@ void ffDetectOSImpl(FFOSResult* os)
 {
     parseSystemVersion(os);
 
-    if(ffStrbufStartsWithIgnCaseS(&os->name, "MacOS"))
-        ffStrbufSetStatic(&os->id, "macos");
+    ffStrbufSetStatic(&os->id, "macos");
 
     if(os->version.length == 0)
         ffSysctlGetString("kern.osproductversion", &os->version);
@@ -106,7 +106,6 @@ void ffDetectOSImpl(FFOSResult* os)
     if(os->buildID.length == 0)
         ffSysctlGetString("kern.osversion", &os->buildID);
 
-    ffStrbufAppend(&os->prettyName, &os->name);
     ffStrbufAppend(&os->versionID, &os->version);
 
     if(!detectOSCodeName(os))
